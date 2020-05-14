@@ -6,6 +6,7 @@ import threading
 import socket
 import json
 import random
+import json
 from messages import MsgType, MsgDataType, MsgPacker
 
 # Return ip address of current machine
@@ -22,17 +23,24 @@ def createSocket(port=9090, ip='', verbose=True):
         print('Server started at %s:%d'%(get_ip_address(), port))
     return s
 
-# Run ROS in a loop
-def rosLoop(rate, pub):
-    while not rospy.is_shutdown():
-        hello_str = "hello world %s" % rospy.get_time()
-        rospy.loginfo(hello_str)
-        pub.publish(hello_str)
-        rate.sleep()
 
+# def callback(data):
+#     rospy.loginfo(data.data)
+coordinates = {}
 
-def callback(data):
-    rospy.loginfo(data.data)
+# Dictionary that contains: robotIP - robotID
+robots = {}
+
+def coordinatesCb(data):
+    global coordinates
+    # Get json string
+    data_json = data.data
+    # Unpack string to dictionary
+    data_dict = json.loads(data_json)
+    # Save received coordinates
+    for k in  data_dict:
+        i = int(k)
+        coordinates[i] = data_dict[k]
 
 
 #########################################################
@@ -42,6 +50,7 @@ def callback(data):
 # Best point found by swarm
 x_best, y_best, f_best = None, None, None
 
+# MOVE TO /camera_node
 # Objective function - in real-world conditions
 # robots should measure its value by themselves
 def objectiveFunction(x,y):
@@ -49,9 +58,13 @@ def objectiveFunction(x,y):
 
 # Global navigation (plan to do it with camera)
 def getRobotCoordinates(robot_name):
-	x = random.randint(0, 20)
-	y = random.randint(0, 20)
-	return x,y
+    global robots, coordinates
+    robot_id = robots[robot_name]
+    # x = random.randint(0, 20)
+    # y = random.randint(0, 20)
+    x = coordinates[robot_id]['x']
+    y = coordinates[robot_id]['y']
+    return x,y
 
 #########################################################
 #########################################################
@@ -59,35 +72,36 @@ def getRobotCoordinates(robot_name):
 
 
 def handleMsg(msg, addr):
+    global robots
+    data = MsgPacker.unpack(msg)
+    response = {}
 
-	data = MsgPacker.unpack(msg)
-	response = {}
-
-	if data['type'] == MsgType.GET:
-		if data['data_type'] == MsgDataType.POS:
-			response['type'] = MsgType.SEND
-			response['data_type'] = MsgDataType.POS
-			x,y = getRobotCoordinates(addr)
-			f = objectiveFunction(x,y)
-			response['x'] = x
-			response['y'] = y
-			response['f'] = f
+    if data['type'] == MsgType.GET:
+    	if data['data_type'] == MsgDataType.POS:
+    		response['type'] = MsgType.SEND
+    		response['data_type'] = MsgDataType.POS
+    		x,y = getRobotCoordinates(addr)
+    		f = objectiveFunction(x,y)
+    		response['x'] = x
+    		response['y'] = y
+    		response['f'] = f
         elif data['data_type'] == MsgDataType.SWARM_BEST_POS:
             response['x'] = x_best
             response['y'] = y_best
             response['f'] = f_best
-	elif data['type'] == MsgType.SEND:
-		if data['data_type'] == MsgDataType.POS:
-			# If we don't have best swarm point
-			# or if our point is greater than the robot's one
-			if f_best == None or f_best > data['f']:
-				f_best = data['f']
-				x_best = data['x']
-				y_best = data['y']
-		elif data['data_type'] == MsgDataType.COMMENT:
-			print(addr, ': ', data['comment'])
-	return response
-
+    elif data['type'] == MsgType.SEND:
+    	if data['data_type'] == MsgDataType.POS:
+    		# If we don't have best swarm point
+    		# or if our point is greater than the robot's one
+    		if f_best == None or f_best > data['f']:
+    			f_best = data['f']
+    			x_best = data['x']
+    			y_best = data['y']
+    	elif data['data_type'] == MsgDataType.COMMENT:
+            print(addr, ': ', data['comment'], data['id'])
+            robots[addr] = data['id']
+            print('All robots: ', robots)
+    return response
 
 if __name__ == '__main__':
     try:
@@ -100,13 +114,9 @@ if __name__ == '__main__':
         # pub = rospy.Publisher('chatter', String, queue_size=10)
         rospy.init_node('server', anonymous=True)
 
-        # Subscribe to image from camera
-        rospy.Subscriber("chatter", String, callback)
+        # Subscribe to robot coordinates from camera
+        rospy.Subscriber("coordinates", String, coordinatesCb)
         rate = rospy.Rate(10) # 10hz
-
-        # Run ROS in a different thread
-        # rT = threading.Thread(target = rosLoop, args=(rate, pub))
-        # rT.start()
 
         while not rospy.is_shutdown():
             try:
@@ -127,8 +137,6 @@ if __name__ == '__main__':
                 break
         # Close socket
         s.close()
-
-        # rT.join(1.0)
 
     except rospy.ROSInterruptException:
         pass
